@@ -46,21 +46,23 @@ jobs:
           pwd
           ls -la
 
-      - name: Install LibreOffice + poppler + fonts
+      - name: Install LibreOffice + renderers + fonts
         run: |
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libreoffice \
             poppler-utils \
+            mupdf-tools \
             fonts-dejavu-core \
             fonts-liberation \
             fonts-noto-core \
             fonts-noto-cjk \
             fontconfig
           fc-cache -f
-          which soffice pdftoppm
+          which soffice pdftoppm mutool
           soffice --version
           pdftoppm -v 2>&1 | head -2 || true
+          mutool -v 2>&1 | head -2 || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -96,13 +98,50 @@ jobs:
 
       - name: Render PDF -> per-slide PNGs
         id: render_pngs
+        # Do NOT use set -e here — we want to try multiple renderers and
+        # always reach the diagnostic + (possibly partial) commit afterwards.
+        shell: bash -xo pipefail {0}
         run: |
           mkdir -p docs/slides
+          echo "=== pdfinfo ==="
+          pdfinfo build/SOM_PC_26_Slides.pdf || true
+          PAGES=$(pdfinfo build/SOM_PC_26_Slides.pdf 2>/dev/null | awk '/^Pages:/ {print $2}')
+          PAGES=${PAGES:-0}
+          echo "detected $PAGES pages"
+
+          echo "=== try pdftoppm for slides (1920) ==="
           pdftoppm -png -scale-to 1920 \
             build/SOM_PC_26_Slides.pdf docs/slides/slide
+          RC_SLIDES_PT=$?
+          echo "pdftoppm slides rc=${RC_SLIDES_PT}"
+
+          echo "=== try pdftoppm for thumbs (480) ==="
           pdftoppm -png -scale-to 480 \
             build/SOM_PC_26_Slides.pdf docs/slides/thumb
-          # Zero-pad numbers so sort order is correct
+          RC_THUMBS_PT=$?
+          echo "pdftoppm thumbs rc=${RC_THUMBS_PT}"
+
+          SLIDE_COUNT=$(ls docs/slides/slide-*.png 2>/dev/null | wc -l)
+          THUMB_COUNT=$(ls docs/slides/thumb-*.png 2>/dev/null | wc -l)
+          echo "after pdftoppm: slides=${SLIDE_COUNT} thumbs=${THUMB_COUNT}"
+
+          # Fall back to mutool if pdftoppm produced fewer than expected
+          if [ "${SLIDE_COUNT}" -lt "${PAGES}" ] || [ "${SLIDE_COUNT}" -eq 0 ]; then
+            echo "=== fallback: mutool for slides (1920) ==="
+            rm -f docs/slides/slide-*.png
+            mutool draw -o docs/slides/slide-%d.png -w 1920 \
+              build/SOM_PC_26_Slides.pdf
+            echo "mutool slides rc=$?"
+          fi
+          if [ "${THUMB_COUNT}" -lt "${PAGES}" ] || [ "${THUMB_COUNT}" -eq 0 ]; then
+            echo "=== fallback: mutool for thumbs (480) ==="
+            rm -f docs/slides/thumb-*.png
+            mutool draw -o docs/slides/thumb-%d.png -w 480 \
+              build/SOM_PC_26_Slides.pdf
+            echo "mutool thumbs rc=$?"
+          fi
+
+          # Zero-pad filenames so lexical order = slide order
           cd docs/slides
           for prefix in slide thumb; do
             for f in ${prefix}-*.png; do
@@ -112,9 +151,17 @@ jobs:
               [ "$f" = "${prefix}-${nz}.png" ] || mv "$f" "${prefix}-${nz}.png"
             done
           done
-          echo "slides: $(ls slide-*.png 2>/dev/null | wc -l)"
-          echo "thumbs: $(ls thumb-*.png 2>/dev/null | wc -l)"
+
+          SLIDE_COUNT=$(ls slide-*.png 2>/dev/null | wc -l)
+          THUMB_COUNT=$(ls thumb-*.png 2>/dev/null | wc -l)
+          echo "final: slides=${SLIDE_COUNT} thumbs=${THUMB_COUNT}"
           du -sh .
+
+          # Fail the step only if we produced nothing usable
+          if [ "${SLIDE_COUNT}" -lt 1 ]; then
+            echo "FATAL: no slide PNGs produced"
+            exit 1
+          fi
 
       - name: Diagnostics — final state before commit
         if: always()
