@@ -1,11 +1,9 @@
 name: Render slide images
 
 # Regenerate slide PNGs whenever the pptx (or this workflow / build script)
-# changes. Images are committed back into docs/slides so the static
-# GitHub Pages site (served from /docs) immediately picks them up.
-#
-# The commit message ends with "[skip ci]" so re-committing the images
-# doesn't re-trigger the workflow.
+# changes, and commit them into docs/slides/ so the static Pages site
+# (served from /docs) immediately picks them up. Commit message ends with
+# "[skip ci]" so re-committing images doesn't re-trigger the workflow.
 
 on:
   push:
@@ -21,9 +19,11 @@ on:
 permissions:
   contents: write
 
+# NOTE: we deliberately do NOT use `set -u` — several external scripts that
+# shells invoke (apt postinsts, setup-python) reference unset vars.
 defaults:
   run:
-    shell: bash -euxo pipefail {0}
+    shell: bash -exo pipefail {0}
 
 jobs:
   render:
@@ -32,22 +32,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # fetch full history so we can rebase + push back cleanly
           fetch-depth: 0
           persist-credentials: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Diagnostics — runner info
+        run: |
+          echo "runner.os       = ${RUNNER_OS}"
+          echo "runner.temp     = ${RUNNER_TEMP}"
+          echo "GITHUB_REF_NAME = ${GITHUB_REF_NAME}"
+          uname -a
+          lsb_release -a || cat /etc/os-release
+          df -h / | tail -1
+          pwd
+          ls -la
 
       - name: Install LibreOffice + poppler + fonts
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            libreoffice-impress \
-            libreoffice-core \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libreoffice \
             poppler-utils \
             fonts-dejavu-core \
             fonts-liberation \
-            fonts-noto-core
-          # Verify the tools are available
+            fonts-noto-core \
+            fonts-noto-cjk \
+            fontconfig
+          fc-cache -f
           which soffice pdftoppm
           soffice --version
           pdftoppm -v 2>&1 | head -2 || true
@@ -60,23 +70,24 @@ jobs:
       - name: Install Python deps
         run: pip install python-pptx
 
-      - name: Rebuild slides.json (titles + count)
+      - name: Rebuild slides.json
         run: python build.py
 
       - name: Convert pptx -> pdf
-        env:
-          # Force soffice to create its profile in a writable, unique path
-          # — avoids the "source file could not be loaded" race on first run.
-          HOME: ${{ runner.temp }}/lo-home
+        id: pdf
         run: |
-          mkdir -p "$HOME" build
+          mkdir -p build
+          # Use an isolated user profile for soffice; avoids the first-run
+          # "source file could not be loaded" race when $HOME is pre-populated.
+          LO_PROFILE="${RUNNER_TEMP}/lo-profile"
+          mkdir -p "${LO_PROFILE}"
           soffice \
             --headless \
             --norestore \
             --nolockcheck \
             --nodefault \
             --nofirststartwizard \
-            -env:UserInstallation=file://$HOME/.lo-profile \
+            "-env:UserInstallation=file://${LO_PROFILE}" \
             --convert-to pdf \
             --outdir build \
             SOM_PC_26_Slides.pptx
@@ -84,15 +95,14 @@ jobs:
           test -s build/SOM_PC_26_Slides.pdf
 
       - name: Render PDF -> per-slide PNGs
+        id: render_pngs
         run: |
           mkdir -p docs/slides
-          # -scale-to N sets both max dimensions, preserving aspect. A 16:9 slide
-          # at -scale-to 1920 becomes 1920x1080; at -scale-to 480 -> 480x270.
           pdftoppm -png -scale-to 1920 \
             build/SOM_PC_26_Slides.pdf docs/slides/slide
           pdftoppm -png -scale-to 480 \
             build/SOM_PC_26_Slides.pdf docs/slides/thumb
-          # Zero-pad filenames (slide-1.png -> slide-01.png) so lexical order = slide order
+          # Zero-pad numbers so sort order is correct
           cd docs/slides
           for prefix in slide thumb; do
             for f in ${prefix}-*.png; do
@@ -102,11 +112,25 @@ jobs:
               [ "$f" = "${prefix}-${nz}.png" ] || mv "$f" "${prefix}-${nz}.png"
             done
           done
-          echo "slides: $(ls slide-*.png | wc -l)"
-          echo "thumbs: $(ls thumb-*.png | wc -l)"
+          echo "slides: $(ls slide-*.png 2>/dev/null | wc -l)"
+          echo "thumbs: $(ls thumb-*.png 2>/dev/null | wc -l)"
           du -sh .
 
+      - name: Diagnostics — final state before commit
+        if: always()
+        run: |
+          echo "=== build/ ==="
+          ls -la build/ 2>&1 || true
+          echo "=== docs/slides/ ==="
+          ls -la docs/slides/ 2>&1 | head -20 || true
+          echo "=== docs/slides count ==="
+          find docs/slides -name 'slide-*.png' 2>/dev/null | wc -l
+          find docs/slides -name 'thumb-*.png' 2>/dev/null | wc -l
+          echo "=== git status ==="
+          git status --short
+
       - name: Commit rendered assets back to the branch
+        if: success()
         run: |
           git config user.name  "som-slides-bot"
           git config user.email "som-slides-bot@users.noreply.github.com"
@@ -116,6 +140,6 @@ jobs:
             exit 0
           fi
           git commit -m "Render slide images [skip ci]"
-          # A concurrent push could have advanced the branch; rebase to be safe
+          # If the branch moved forward during the run, rebase onto remote
           git pull --rebase origin "${GITHUB_REF_NAME}" || true
           git push origin "HEAD:${GITHUB_REF_NAME}"
