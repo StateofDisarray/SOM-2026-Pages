@@ -113,20 +113,9 @@
   const repoInput = document.getElementById("repo-input");
   const editLink = document.getElementById("edit-on-github");
 
-  numInput.max = deck.slides.length;
+  numInput.max = deck.count;
 
-  const title = (slide) => {
-    for (const e of slide.elements) {
-      if (e.type !== "text") continue;
-      for (const p of (e.paragraphs || [])) {
-        for (const r of (p.runs || [])) {
-          const t = (r.text || "").trim();
-          if (t) return t;
-        }
-      }
-    }
-    return slide.layout || "Slide";
-  };
+  const title = (slide) => slide.title || slide.layout || "Slide";
 
   for (const s of deck.slides) {
     const opt = document.createElement("option");
@@ -154,11 +143,16 @@
   }
 
   function update() {
-    const n = Math.max(1, Math.min(deck.slides.length, Number(numInput.value) || 1));
+    const n = Math.max(1, Math.min(deck.count, Number(numInput.value) || 1));
     numInput.value = n;
     picker.value = n;
     const slide = deck.slides[n - 1];
-    preview.innerHTML = `<strong>Slide ${n} — ${title(slide)}</strong>Layout: ${slide.layout || "—"}`;
+    const nz = String(n).padStart(2, "0");
+    preview.innerHTML =
+      `<strong>Slide ${n} — ${title(slide)}</strong>` +
+      `<img src="slides/thumb-${nz}.png" alt="" onerror="this.style.display='none'" ` +
+      `style="max-width:100%; margin-top:8px; border-radius:4px; border:1px solid #334155;">` +
+      `<div style="margin-top:6px">Layout: ${slide.layout || "—"}</div>`;
     const payload = {
       slide: n,
       updated: new Date().toISOString(),

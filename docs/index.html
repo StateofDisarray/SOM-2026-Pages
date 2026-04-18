@@ -19,15 +19,20 @@
     <button id="prev" title="Previous (←)" aria-label="Previous">‹</button>
     <input id="jump" type="number" min="1" value="1" aria-label="Jump to slide" />
     <button id="next" title="Next (→)" aria-label="Next">›</button>
-    <button id="goto-live" title="Jump to current live slide">⦿ Live</button>
+    <button id="goto-live" title="Jump to current live slide (L)">⦿ Live</button>
     <button id="toggle-thumbs" title="Toggle thumbnails (T)">☰</button>
   </div>
 </header>
 
 <main>
   <section id="stage">
-    <div id="slide-scaler">
-      <div id="slide" class="slide"></div>
+    <div id="slide" class="slide">
+      <img id="slide-img" alt="" />
+      <div class="missing-msg">
+        Slide images haven't been built yet.
+        <br>
+        <small>The GitHub Actions workflow renders them on push — give it a minute after the first deploy.</small>
+      </div>
     </div>
     <div class="stage-meta">
       <span id="viewing-num">Slide 1</span>
@@ -40,7 +45,7 @@
 
 <footer>
   <span>Updated: <span id="updated">–</span></span>
-  <span class="muted">Arrow keys to navigate · T for thumbs · L for live</span>
+  <span class="muted">← → to navigate · T thumbs · L live · F fullscreen</span>
 </footer>
 
 <script src="viewer.js"></script>

@@ -1,7 +1,6 @@
-// SOM Precourse 2026 — live slide viewer.
-// Loads slides.json once, polls current.json for the live pointer, and
-// renders absolute-positioned slide elements into a fixed 960x540 canvas
-// that's scaled to fit the viewport.
+// SOM Precourse 2026 — live slide viewer (image-based).
+// Shows a pre-rendered PNG per slide plus a thumbnail rail.
+// The live slide is driven by docs/current.json, polled every 15s.
 
 (() => {
   const state = {
@@ -15,8 +14,8 @@
   };
 
   const el = (sel) => document.querySelector(sel);
+  const imgEl = el("#slide-img");
   const slideEl = el("#slide");
-  const scalerEl = el("#slide-scaler");
   const thumbsEl = el("#thumbs");
   const liveNumEl = el("#live-num");
   const totalNumEl = el("#total-num");
@@ -27,12 +26,16 @@
   const jumpInput = el("#jump");
   const mainEl = document.querySelector("main");
 
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const slideSrc = (n) => `slides/slide-${pad2(n)}.png`;
+  const thumbSrc = (n) => `slides/thumb-${pad2(n)}.png`;
+
   // ---------- loading ----------
   async function loadDeck() {
     const res = await fetch("slides.json", { cache: "no-cache" });
     state.deck = await res.json();
-    totalNumEl.textContent = state.deck.slides.length;
-    jumpInput.max = state.deck.slides.length;
+    totalNumEl.textContent = state.deck.count;
+    jumpInput.max = state.deck.count;
     buildThumbs();
   }
 
@@ -41,7 +44,7 @@
       const res = await fetch("current.json?_=" + Date.now(), { cache: "no-cache" });
       if (!res.ok) throw new Error("http " + res.status);
       const data = await res.json();
-      const n = Math.max(1, Math.min(state.deck.slides.length, Number(data.slide) || 1));
+      const n = Math.max(1, Math.min(state.deck.count, Number(data.slide) || 1));
       const changed = n !== state.liveIdx;
       state.liveIdx = n;
       state.liveUpdated = data.updated || null;
@@ -58,111 +61,20 @@
     }
   }
 
-  // ---------- rendering ----------
-  function renderRun(run) {
-    const span = document.createElement("span");
-    const parts = (run.text || "").split("\n");
-    parts.forEach((part, i) => {
-      if (i > 0) span.appendChild(document.createElement("br"));
-      span.appendChild(document.createTextNode(part));
-    });
-    const s = span.style;
-    if (run.size) s.fontSize = run.size + "px";
-    if (run.bold) s.fontWeight = "700";
-    if (run.italic) s.fontStyle = "italic";
-    if (run.underline) s.textDecoration = "underline";
-    if (run.color) s.color = run.color;
-    if (run.name) s.fontFamily = `"${run.name}", "Helvetica Neue", Arial, sans-serif`;
-    return span;
-  }
-
-  function renderTextEl(element) {
-    const box = document.createElement("div");
-    box.className = "el text";
-    positionBox(box, element);
-    const defs = element.defaults || {};
-    box.style.fontSize = (defs.size || 16) + "px";
-    box.style.color = defs.color || "#111827";
-    box.style.fontWeight = defs.bold ? "700" : "400";
-    box.style.textAlign = defs.align || "left";
-    box.style.justifyContent = "center";
-
-    const paras = element.paragraphs || [];
-    for (const p of paras) {
-      const para = document.createElement("p");
-      if (p.level) para.className = "lvl-" + Math.min(3, p.level);
-      if (p.align) para.style.textAlign = p.align;
-      if (!p.runs || p.runs.length === 0) {
-        para.innerHTML = "&nbsp;";
-      } else {
-        for (const run of p.runs) {
-          para.appendChild(renderRun(run));
-        }
-      }
-      box.appendChild(para);
-    }
-    return box;
-  }
-
-  function renderImageEl(element) {
-    const box = document.createElement("div");
-    box.className = "el image";
-    positionBox(box, element);
-    const img = document.createElement("img");
-    img.src = element.src;
-    img.alt = "";
-    img.loading = "lazy";
-    box.appendChild(img);
-    return box;
-  }
-
-  function renderRectEl(element) {
-    const box = document.createElement("div");
-    box.className = "el rect";
-    positionBox(box, element);
-    box.style.background = element.color;
-    return box;
-  }
-
-  function positionBox(box, element) {
-    box.style.left = element.x + "px";
-    box.style.top = element.y + "px";
-    box.style.width = element.w + "px";
-    box.style.height = element.h + "px";
-  }
-
-  function renderSlide(idx) {
-    const slide = state.deck.slides[idx - 1];
-    if (!slide) return;
-    slideEl.innerHTML = "";
-    slideEl.style.background = slide.bg || "#ffffff";
-    for (const element of slide.elements) {
-      let node;
-      if (element.type === "text") node = renderTextEl(element);
-      else if (element.type === "image") node = renderImageEl(element);
-      else if (element.type === "rect") node = renderRectEl(element);
-      if (node) slideEl.appendChild(node);
-    }
-    layoutEl.textContent = slide.layout || "";
-  }
-
-  function fitSlide() {
-    const w = scalerEl.clientWidth;
-    const h = scalerEl.clientHeight;
-    if (!w || !h) return;
-    const scale = Math.min(w / state.deck.width, h / state.deck.height);
-    slideEl.style.transform = `scale(${scale})`;
-  }
-
   // ---------- navigation ----------
   function showSlide(n, { fromLive = false } = {}) {
-    n = Math.max(1, Math.min(state.deck.slides.length, n));
+    n = Math.max(1, Math.min(state.deck.count, n));
     state.viewingIdx = n;
     if (!fromLive) state.followLive = (n === state.liveIdx);
-    viewingNumEl.textContent = "Slide " + n;
+    const slide = state.deck.slides[n - 1];
+    viewingNumEl.textContent = `Slide ${n}${slide && slide.title ? " — " + slide.title : ""}`;
+    layoutEl.textContent = slide ? slide.layout || "" : "";
     jumpInput.value = n;
-    renderSlide(n);
-    fitSlide();
+    // swap image (preload next/prev to avoid flicker)
+    imgEl.src = slideSrc(n);
+    imgEl.alt = slide ? `Slide ${n}: ${slide.title}` : `Slide ${n}`;
+    if (n + 1 <= state.deck.count) new Image().src = slideSrc(n + 1);
+    if (n - 1 >= 1) new Image().src = slideSrc(n - 1);
     markThumbs();
   }
 
@@ -174,33 +86,23 @@
   }
 
   // ---------- thumbnails ----------
-  function thumbTitle(slide) {
-    for (const e of slide.elements) {
-      if (e.type !== "text") continue;
-      for (const p of (e.paragraphs || [])) {
-        for (const r of (p.runs || [])) {
-          const t = (r.text || "").trim();
-          if (t) return t;
-        }
-      }
-    }
-    return slide.layout || "Slide";
-  }
-
   function buildThumbs() {
     thumbsEl.innerHTML = "";
-    state.deck.slides.forEach((slide) => {
+    for (const s of state.deck.slides) {
       const t = document.createElement("div");
       t.className = "thumb";
-      t.dataset.idx = slide.index;
-      t.innerHTML =
-        `<span class="n">${slide.index}</span>` +
-        `<span class="title-text"></span>` +
-        `<span class="live-badge" hidden>LIVE</span>`;
-      t.querySelector(".title-text").textContent = thumbTitle(slide);
-      t.addEventListener("click", () => showSlide(slide.index));
+      t.dataset.idx = s.index;
+      t.innerHTML = `
+        <div class="thumb-img"><img loading="lazy" alt="" src="${thumbSrc(s.index)}"></div>
+        <div class="thumb-meta">
+          <span class="n">${s.index}</span>
+          <span class="title-text"></span>
+          <span class="live-badge" hidden>LIVE</span>
+        </div>`;
+      t.querySelector(".title-text").textContent = s.title || s.layout || "Slide";
+      t.addEventListener("click", () => showSlide(s.index));
       thumbsEl.appendChild(t);
-    });
+    }
     markThumbs();
   }
 
@@ -229,7 +131,6 @@
   function toggleThumbs() {
     state.thumbsVisible = !state.thumbsVisible;
     mainEl.classList.toggle("no-thumbs", !state.thumbsVisible);
-    fitSlide();
   }
 
   // ---------- events ----------
@@ -238,32 +139,44 @@
   el("#goto-live").addEventListener("click", goLive);
   el("#toggle-thumbs").addEventListener("click", toggleThumbs);
   jumpInput.addEventListener("change", () => showSlide(Number(jumpInput.value) || 1));
+  imgEl.addEventListener("click", nextSlide);
+  imgEl.addEventListener("error", () => {
+    slideEl.classList.add("missing");
+  });
+  imgEl.addEventListener("load", () => {
+    slideEl.classList.remove("missing");
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT") return;
     if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") { e.preventDefault(); nextSlide(); }
     else if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); prevSlide(); }
     else if (e.key === "Home") { e.preventDefault(); showSlide(1); }
-    else if (e.key === "End") { e.preventDefault(); showSlide(state.deck.slides.length); }
+    else if (e.key === "End") { e.preventDefault(); showSlide(state.deck.count); }
     else if (e.key === "l" || e.key === "L") { e.preventDefault(); goLive(); }
     else if (e.key === "t" || e.key === "T") { e.preventDefault(); toggleThumbs(); }
+    else if (e.key === "f" || e.key === "F") { e.preventDefault(); toggleFullscreen(); }
   });
-  window.addEventListener("resize", fitSlide);
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  }
 
   // ---------- init ----------
   (async () => {
     await loadDeck();
-    // optional ?slide=N for deep-linking a specific slide
     const params = new URLSearchParams(location.search);
     const fromUrl = Number(params.get("slide"));
     await loadLive();
-    if (fromUrl && fromUrl >= 1 && fromUrl <= state.deck.slides.length) {
+    if (fromUrl && fromUrl >= 1 && fromUrl <= state.deck.count) {
       showSlide(fromUrl);
     } else {
       showSlide(state.liveIdx, { fromLive: true });
     }
-    fitSlide();
-    // poll for live pointer changes every 15s
     setInterval(loadLive, 15000);
   })();
 })();
