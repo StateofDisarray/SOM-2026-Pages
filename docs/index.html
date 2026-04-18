@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SOM Precourse 2026 — Live</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <strong>SOM Informatics Precourse 2026</strong>
+    <span class="sep">·</span>
+    <span id="live-indicator" class="live">
+      <span class="dot"></span> Live — slide <span id="live-num">–</span> of <span id="total-num">–</span>
+    </span>
+  </div>
+  <div class="controls">
+    <button id="prev" title="Previous (←)" aria-label="Previous">‹</button>
+    <input id="jump" type="number" min="1" value="1" aria-label="Jump to slide" />
+    <button id="next" title="Next (→)" aria-label="Next">›</button>
+    <button id="goto-live" title="Jump to current live slide">⦿ Live</button>
+    <button id="toggle-thumbs" title="Toggle thumbnails (T)">☰</button>
+  </div>
+</header>
+
+<main>
+  <section id="stage">
+    <div id="slide-scaler">
+      <div id="slide" class="slide"></div>
+    </div>
+    <div class="stage-meta">
+      <span id="viewing-num">Slide 1</span>
+      <span id="layout-name" class="muted"></span>
+    </div>
+  </section>
+
+  <aside id="thumbs" aria-label="Slide thumbnails"></aside>
+</main>
+
+<footer>
+  <span>Updated: <span id="updated">–</span></span>
+  <span class="muted">Arrow keys to navigate · T for thumbs · L for live</span>
+</footer>
+
+<script src="viewer.js"></script>
+</body>
+</html>
