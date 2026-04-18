@@ -34,10 +34,18 @@ def build() -> None:
     DOCS.mkdir(exist_ok=True)
     prs = Presentation(PPTX)
     slides = []
-    for idx, slide in enumerate(prs.slides, start=1):
+    # LibreOffice skips slides marked hidden (<p:sld show="0">) when exporting
+    # to PDF, so the rendered PNG set excludes them. We mirror that here so
+    # the viewer's slide index always matches the PNG filenames.
+    position = 0
+    for source_idx, slide in enumerate(prs.slides, start=1):
+        if slide.element.get("show") == "0":
+            continue
+        position += 1
         slides.append({
-            "index": idx,
-            "title": first_nonempty_text(slide) or f"Slide {idx}",
+            "index": position,
+            "source_index": source_idx,
+            "title": first_nonempty_text(slide) or f"Slide {source_idx}",
             "layout": slide.slide_layout.name,
         })
 
@@ -47,7 +55,7 @@ def build() -> None:
         "slides": slides,
     }
     (DOCS / "slides.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1))
-    print(f"wrote {len(slides)} slide entries")
+    print(f"wrote {len(slides)} slide entries (skipped {prs.slides.__len__() - len(slides)} hidden)")
 
 
 if __name__ == "__main__":

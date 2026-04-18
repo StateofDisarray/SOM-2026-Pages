@@ -1,11 +1,9 @@
 name: Render slide images
 
 # Regenerate slide PNGs whenever the pptx (or this workflow / build script)
-# changes. Images are committed back into docs/slides so the static
-# GitHub Pages site (served from /docs) immediately picks them up.
-#
-# The commit message ends with "[skip ci]" so re-committing the images
-# doesn't re-trigger the workflow.
+# changes, and commit them into docs/slides/ so the static Pages site
+# (served from /docs) immediately picks them up. Commit message ends with
+# "[skip ci]" so re-committing images doesn't re-trigger the workflow.
 
 on:
   push:
@@ -21,22 +19,50 @@ on:
 permissions:
   contents: write
 
+# NOTE: we deliberately do NOT use `set -u` — several external scripts that
+# shells invoke (apt postinsts, setup-python) reference unset vars.
+defaults:
+  run:
+    shell: bash -exo pipefail {0}
+
 jobs:
   render:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
-      - name: Install LibreOffice + poppler
+      - name: Diagnostics — runner info
+        run: |
+          echo "runner.os       = ${RUNNER_OS}"
+          echo "runner.temp     = ${RUNNER_TEMP}"
+          echo "GITHUB_REF_NAME = ${GITHUB_REF_NAME}"
+          uname -a
+          lsb_release -a || cat /etc/os-release
+          df -h / | tail -1
+          pwd
+          ls -la
+
+      - name: Install LibreOffice + renderers + fonts
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libreoffice \
             poppler-utils \
+            mupdf-tools \
+            fonts-dejavu-core \
             fonts-liberation \
             fonts-noto-core \
-            fonts-noto-color-emoji
+            fonts-noto-cjk \
+            fontconfig
+          fc-cache -f
+          which soffice pdftoppm mutool
+          soffice --version
+          pdftoppm -v 2>&1 | head -2 || true
+          mutool -v 2>&1 | head -2 || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,49 +72,108 @@ jobs:
       - name: Install Python deps
         run: pip install python-pptx
 
-      - name: Rebuild slides.json (titles + count)
+      - name: Rebuild slides.json
         run: python build.py
 
       - name: Convert pptx -> pdf
+        id: pdf
         run: |
           mkdir -p build
-          soffice --headless --norestore --nolockcheck \
-            --convert-to pdf SOM_PC_26_Slides.pptx --outdir build
+          # Use an isolated user profile for soffice; avoids the first-run
+          # "source file could not be loaded" race when $HOME is pre-populated.
+          LO_PROFILE="${RUNNER_TEMP}/lo-profile"
+          mkdir -p "${LO_PROFILE}"
+          soffice \
+            --headless \
+            --norestore \
+            --nolockcheck \
+            --nodefault \
+            --nofirststartwizard \
+            "-env:UserInstallation=file://${LO_PROFILE}" \
+            --convert-to pdf \
+            --outdir build \
+            SOM_PC_26_Slides.pptx
           ls -la build/
+          test -s build/SOM_PC_26_Slides.pdf
 
-      - name: Render PDF -> PNG per slide (1920x1080)
+      - name: Render PDF -> per-slide PNGs
+        id: render_pngs
+        shell: bash -xo pipefail {0}
         run: |
+          # Clean slate: wipe any stale renders from previous runs.
+          rm -rf docs/slides
           mkdir -p docs/slides
-          # pdftoppm -r 200 at 960pt width produces ~2666px — too big.
-          # Use -scale-to 1920 for a consistent 1920x1080 output.
-          pdftoppm -png -scale-to 1920 \
-            build/SOM_PC_26_Slides.pdf docs/slides/slide
-          # pdftoppm names files slide-1.png, slide-2.png … slide-75.png.
-          # Pad to slide-01.png for sane sort order.
-          cd docs/slides
-          for f in slide-*.png; do
-            n=$(echo "$f" | sed -E 's/slide-([0-9]+)\.png/\1/')
-            nz=$(printf '%02d' "$n")
-            [ "$f" = "slide-$nz.png" ] || mv "$f" "slide-$nz.png"
-          done
-          ls -la | head -10
-          echo "count: $(ls slide-*.png | wc -l)"
 
-      - name: Render thumbnails (400px wide)
-        run: |
-          pdftoppm -png -scale-to-x 400 -scale-to-y -1 \
-            build/SOM_PC_26_Slides.pdf docs/slides/thumb
-          cd docs/slides
-          for f in thumb-*.png; do
-            n=$(echo "$f" | sed -E 's/thumb-([0-9]+)\.png/\1/')
-            nz=$(printf '%02d' "$n")
-            [ "$f" = "thumb-$nz.png" ] || mv "$f" "thumb-$nz.png"
-          done
-          echo "thumbs: $(ls thumb-*.png | wc -l)"
+          pdfinfo build/SOM_PC_26_Slides.pdf
+          PAGES=$(pdfinfo build/SOM_PC_26_Slides.pdf | awk '/^Pages:/ {print $2}')
+          PAGES=${PAGES:-0}
+          echo "PDF has $PAGES pages"
+          test "$PAGES" -gt 0
 
-      - name: Commit rendered assets
+          # Render each page individually into a deterministic filename.
+          # Prefer pdftoppm; fall back to mutool for any page it skips.
+          render_one() {
+            local page="$1" width="$2" out="$3"
+            # pdftoppm first
+            if pdftoppm -png -scale-to "$width" \
+                 -f "$page" -l "$page" \
+                 build/SOM_PC_26_Slides.pdf "${out}.tmp"; then
+              # pdftoppm writes "${out}.tmp-NN.png" (NN padded to PAGES width)
+              local got
+              got=$(ls "${out}.tmp-"*.png 2>/dev/null | head -1)
+              if [ -n "$got" ]; then
+                mv "$got" "$out"
+                return 0
+              fi
+            fi
+            # mutool fallback
+            mutool draw -o "${out}.tmp.%d.png" -w "$width" \
+              build/SOM_PC_26_Slides.pdf "$page"
+            local got
+            got=$(ls "${out}.tmp."*.png 2>/dev/null | head -1)
+            if [ -n "$got" ]; then
+              mv "$got" "$out"
+              return 0
+            fi
+            return 1
+          }
+
+          for i in $(seq 1 "$PAGES"); do
+            nz=$(printf '%02d' "$i")
+            render_one "$i" 1920 "docs/slides/slide-${nz}.png" \
+              || { echo "Failed to render slide $i"; exit 1; }
+            render_one "$i" 480 "docs/slides/thumb-${nz}.png" \
+              || { echo "Failed to render thumb $i"; exit 1; }
+          done
+
+          rm -f docs/slides/*.tmp* 2>/dev/null || true
+          SLIDE_COUNT=$(ls docs/slides/slide-*.png 2>/dev/null | wc -l)
+          THUMB_COUNT=$(ls docs/slides/thumb-*.png 2>/dev/null | wc -l)
+          echo "final: slides=${SLIDE_COUNT} thumbs=${THUMB_COUNT}"
+          du -sh docs/slides
+
+          if [ "${SLIDE_COUNT}" -ne "${PAGES}" ] || [ "${THUMB_COUNT}" -ne "${PAGES}" ]; then
+            echo "FATAL: expected ${PAGES} slides+thumbs, got ${SLIDE_COUNT}/${THUMB_COUNT}"
+            exit 1
+          fi
+
+      - name: Diagnostics — final state before commit
+        if: always()
         run: |
-          git config user.name "som-slides-bot"
+          echo "=== build/ ==="
+          ls -la build/ 2>&1 || true
+          echo "=== docs/slides/ ==="
+          ls -la docs/slides/ 2>&1 | head -20 || true
+          echo "=== docs/slides count ==="
+          find docs/slides -name 'slide-*.png' 2>/dev/null | wc -l
+          find docs/slides -name 'thumb-*.png' 2>/dev/null | wc -l
+          echo "=== git status ==="
+          git status --short
+
+      - name: Commit rendered assets back to the branch
+        if: success()
+        run: |
+          git config user.name  "som-slides-bot"
           git config user.email "som-slides-bot@users.noreply.github.com"
           git add docs/slides docs/slides.json
           if git diff --cached --quiet; then
@@ -96,4 +181,6 @@ jobs:
             exit 0
           fi
           git commit -m "Render slide images [skip ci]"
-          git push
+          # If the branch moved forward during the run, rebase onto remote
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
