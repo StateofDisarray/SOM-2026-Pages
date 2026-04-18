@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin — set live slide</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  body { overflow: auto; }
+  .admin-wrap {
+    max-width: 720px;
+    margin: 24px auto;
+    padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input[type=number], select, textarea {
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+  }
+  textarea { min-height: 140px; resize: vertical; }
+  .row { display: flex; gap: 10px; align-items: flex-end; }
+  .row > * { flex: 1; }
+  button.primary {
+    background: var(--accent);
+    color: #00243a;
+    border: 0;
+    padding: 9px 14px;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid #334155;
+    padding: 9px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .slide-preview { text-align: center; font-size: 13px; color: var(--muted); }
+  .slide-preview strong { color: var(--text); font-size: 14px; display: block; margin-bottom: 4px; }
+  code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; }
+  a { color: var(--accent); }
+  .muted-small { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="admin-wrap">
+  <div class="card">
+    <h2>Set the live slide</h2>
+    <p class="muted-small">Pick a slide, copy the generated JSON, and paste it into <code>docs/current.json</code> in GitHub. The viewer polls this file every 15 seconds.</p>
+
+    <div class="row">
+      <div>
+        <label for="slide-num">Slide number</label>
+        <input id="slide-num" type="number" min="1" value="1" />
+      </div>
+      <div>
+        <label for="slide-pick">Or pick by title</label>
+        <select id="slide-pick"></select>
+      </div>
+    </div>
+
+    <div class="slide-preview" id="preview" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>current.json</h2>
+    <textarea id="output" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="copy">Copy JSON</button>
+      <button class="ghost" id="download">Download</button>
+      <a class="ghost" id="edit-on-github" target="_blank" rel="noopener" style="text-align:center; text-decoration:none; line-height:36px">Edit on GitHub →</a>
+    </div>
+    <p class="muted-small" style="margin-top:10px">Tip: the <strong>Edit on GitHub</strong> button opens <code>docs/current.json</code> in GitHub's web editor. Paste the JSON, commit, and the live viewer updates within ~15s.</p>
+  </div>
+
+  <div class="card">
+    <h2>Repository</h2>
+    <label for="repo-input">GitHub repo (owner/name)</label>
+    <input id="repo-input" type="text" placeholder="stateofdisarray/som-2026-pages" />
+    <p class="muted-small" style="margin-top:8px">The "Edit on GitHub" link uses this. Stored in your browser.</p>
+  </div>
+
+  <div class="card">
+    <a href="index.html">← back to live viewer</a>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const deck = await (await fetch("slides.json")).json();
+  const numInput = document.getElementById("slide-num");
+  const picker = document.getElementById("slide-pick");
+  const preview = document.getElementById("preview");
+  const output = document.getElementById("output");
+  const repoInput = document.getElementById("repo-input");
+  const editLink = document.getElementById("edit-on-github");
+
+  numInput.max = deck.slides.length;
+
+  const title = (slide) => {
+    for (const e of slide.elements) {
+      if (e.type !== "text") continue;
+      for (const p of (e.paragraphs || [])) {
+        for (const r of (p.runs || [])) {
+          const t = (r.text || "").trim();
+          if (t) return t;
+        }
+      }
+    }
+    return slide.layout || "Slide";
+  };
+
+  for (const s of deck.slides) {
+    const opt = document.createElement("option");
+    opt.value = s.index;
+    opt.textContent = `${s.index}. ${title(s)}`;
+    picker.appendChild(opt);
+  }
+
+  const STORAGE_REPO = "som2026.repo";
+  repoInput.value = localStorage.getItem(STORAGE_REPO) || "stateofdisarray/som-2026-pages";
+  repoInput.addEventListener("change", () => {
+    localStorage.setItem(STORAGE_REPO, repoInput.value.trim());
+    update();
+  });
+
+  async function loadCurrent() {
+    try {
+      const r = await fetch("current.json?_=" + Date.now());
+      const d = await r.json();
+      if (d.slide) {
+        numInput.value = d.slide;
+        picker.value = d.slide;
+      }
+    } catch (_) {}
+  }
+
+  function update() {
+    const n = Math.max(1, Math.min(deck.slides.length, Number(numInput.value) || 1));
+    numInput.value = n;
+    picker.value = n;
+    const slide = deck.slides[n - 1];
+    preview.innerHTML = `<strong>Slide ${n} — ${title(slide)}</strong>Layout: ${slide.layout || "—"}`;
+    const payload = {
+      slide: n,
+      updated: new Date().toISOString(),
+      note: "Edit this file and commit to change the live slide."
+    };
+    output.value = JSON.stringify(payload, null, 2) + "\n";
+
+    const repo = (repoInput.value || "").trim();
+    if (repo) {
+      editLink.href = `https://github.com/${repo}/edit/claude/powerpoint-to-website-Mub1B/docs/current.json`;
+      editLink.classList.remove("disabled");
+    } else {
+      editLink.removeAttribute("href");
+    }
+  }
+
+  numInput.addEventListener("input", update);
+  picker.addEventListener("change", () => { numInput.value = picker.value; update(); });
+
+  document.getElementById("copy").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(output.value);
+    const b = document.getElementById("copy");
+    const prev = b.textContent;
+    b.textContent = "Copied!";
+    setTimeout(() => b.textContent = prev, 1200);
+  });
+
+  document.getElementById("download").addEventListener("click", () => {
+    const blob = new Blob([output.value], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "current.json";
+    a.click();
+  });
+
+  await loadCurrent();
+  update();
+})();
+</script>
+</body>
+</html>
