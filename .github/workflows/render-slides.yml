@@ -21,22 +21,36 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 jobs:
   render:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # fetch full history so we can rebase + push back cleanly
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install LibreOffice + poppler
+      - name: Install LibreOffice + poppler + fonts
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            libreoffice \
+            libreoffice-impress \
+            libreoffice-core \
             poppler-utils \
+            fonts-dejavu-core \
             fonts-liberation \
-            fonts-noto-core \
-            fonts-noto-color-emoji
+            fonts-noto-core
+          # Verify the tools are available
+          which soffice pdftoppm
+          soffice --version
+          pdftoppm -v 2>&1 | head -2 || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -50,45 +64,51 @@ jobs:
         run: python build.py
 
       - name: Convert pptx -> pdf
+        env:
+          # Force soffice to create its profile in a writable, unique path
+          # — avoids the "source file could not be loaded" race on first run.
+          HOME: ${{ runner.temp }}/lo-home
         run: |
-          mkdir -p build
-          soffice --headless --norestore --nolockcheck \
-            --convert-to pdf SOM_PC_26_Slides.pptx --outdir build
+          mkdir -p "$HOME" build
+          soffice \
+            --headless \
+            --norestore \
+            --nolockcheck \
+            --nodefault \
+            --nofirststartwizard \
+            -env:UserInstallation=file://$HOME/.lo-profile \
+            --convert-to pdf \
+            --outdir build \
+            SOM_PC_26_Slides.pptx
           ls -la build/
+          test -s build/SOM_PC_26_Slides.pdf
 
-      - name: Render PDF -> PNG per slide (1920x1080)
+      - name: Render PDF -> per-slide PNGs
         run: |
           mkdir -p docs/slides
-          # pdftoppm -r 200 at 960pt width produces ~2666px — too big.
-          # Use -scale-to 1920 for a consistent 1920x1080 output.
+          # -scale-to N sets both max dimensions, preserving aspect. A 16:9 slide
+          # at -scale-to 1920 becomes 1920x1080; at -scale-to 480 -> 480x270.
           pdftoppm -png -scale-to 1920 \
             build/SOM_PC_26_Slides.pdf docs/slides/slide
-          # pdftoppm names files slide-1.png, slide-2.png … slide-75.png.
-          # Pad to slide-01.png for sane sort order.
-          cd docs/slides
-          for f in slide-*.png; do
-            n=$(echo "$f" | sed -E 's/slide-([0-9]+)\.png/\1/')
-            nz=$(printf '%02d' "$n")
-            [ "$f" = "slide-$nz.png" ] || mv "$f" "slide-$nz.png"
-          done
-          ls -la | head -10
-          echo "count: $(ls slide-*.png | wc -l)"
-
-      - name: Render thumbnails (400px wide)
-        run: |
-          pdftoppm -png -scale-to-x 400 -scale-to-y -1 \
+          pdftoppm -png -scale-to 480 \
             build/SOM_PC_26_Slides.pdf docs/slides/thumb
+          # Zero-pad filenames (slide-1.png -> slide-01.png) so lexical order = slide order
           cd docs/slides
-          for f in thumb-*.png; do
-            n=$(echo "$f" | sed -E 's/thumb-([0-9]+)\.png/\1/')
-            nz=$(printf '%02d' "$n")
-            [ "$f" = "thumb-$nz.png" ] || mv "$f" "thumb-$nz.png"
+          for prefix in slide thumb; do
+            for f in ${prefix}-*.png; do
+              [ -e "$f" ] || continue
+              n=$(echo "$f" | sed -E "s/${prefix}-([0-9]+)\.png/\1/")
+              nz=$(printf '%02d' "$n")
+              [ "$f" = "${prefix}-${nz}.png" ] || mv "$f" "${prefix}-${nz}.png"
+            done
           done
+          echo "slides: $(ls slide-*.png | wc -l)"
           echo "thumbs: $(ls thumb-*.png | wc -l)"
+          du -sh .
 
-      - name: Commit rendered assets
+      - name: Commit rendered assets back to the branch
         run: |
-          git config user.name "som-slides-bot"
+          git config user.name  "som-slides-bot"
           git config user.email "som-slides-bot@users.noreply.github.com"
           git add docs/slides docs/slides.json
           if git diff --cached --quiet; then
@@ -96,4 +116,6 @@ jobs:
             exit 0
           fi
           git commit -m "Render slide images [skip ci]"
-          git push
+          # A concurrent push could have advanced the branch; rebase to be safe
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
