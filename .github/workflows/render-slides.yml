@@ -98,68 +98,62 @@ jobs:
 
       - name: Render PDF -> per-slide PNGs
         id: render_pngs
-        # Do NOT use set -e here — we want to try multiple renderers and
-        # always reach the diagnostic + (possibly partial) commit afterwards.
         shell: bash -xo pipefail {0}
         run: |
+          # Clean slate: wipe any stale renders from previous runs.
+          rm -rf docs/slides
           mkdir -p docs/slides
-          echo "=== pdfinfo ==="
-          pdfinfo build/SOM_PC_26_Slides.pdf || true
-          PAGES=$(pdfinfo build/SOM_PC_26_Slides.pdf 2>/dev/null | awk '/^Pages:/ {print $2}')
+
+          pdfinfo build/SOM_PC_26_Slides.pdf
+          PAGES=$(pdfinfo build/SOM_PC_26_Slides.pdf | awk '/^Pages:/ {print $2}')
           PAGES=${PAGES:-0}
-          echo "detected $PAGES pages"
+          echo "PDF has $PAGES pages"
+          test "$PAGES" -gt 0
 
-          echo "=== try pdftoppm for slides (1920) ==="
-          pdftoppm -png -scale-to 1920 \
-            build/SOM_PC_26_Slides.pdf docs/slides/slide
-          RC_SLIDES_PT=$?
-          echo "pdftoppm slides rc=${RC_SLIDES_PT}"
+          # Render each page individually into a deterministic filename.
+          # Prefer pdftoppm; fall back to mutool for any page it skips.
+          render_one() {
+            local page="$1" width="$2" out="$3"
+            # pdftoppm first
+            if pdftoppm -png -scale-to "$width" \
+                 -f "$page" -l "$page" \
+                 build/SOM_PC_26_Slides.pdf "${out}.tmp"; then
+              # pdftoppm writes "${out}.tmp-NN.png" (NN padded to PAGES width)
+              local got
+              got=$(ls "${out}.tmp-"*.png 2>/dev/null | head -1)
+              if [ -n "$got" ]; then
+                mv "$got" "$out"
+                return 0
+              fi
+            fi
+            # mutool fallback
+            mutool draw -o "${out}.tmp.%d.png" -w "$width" \
+              build/SOM_PC_26_Slides.pdf "$page"
+            local got
+            got=$(ls "${out}.tmp."*.png 2>/dev/null | head -1)
+            if [ -n "$got" ]; then
+              mv "$got" "$out"
+              return 0
+            fi
+            return 1
+          }
 
-          echo "=== try pdftoppm for thumbs (480) ==="
-          pdftoppm -png -scale-to 480 \
-            build/SOM_PC_26_Slides.pdf docs/slides/thumb
-          RC_THUMBS_PT=$?
-          echo "pdftoppm thumbs rc=${RC_THUMBS_PT}"
-
-          SLIDE_COUNT=$(ls docs/slides/slide-*.png 2>/dev/null | wc -l)
-          THUMB_COUNT=$(ls docs/slides/thumb-*.png 2>/dev/null | wc -l)
-          echo "after pdftoppm: slides=${SLIDE_COUNT} thumbs=${THUMB_COUNT}"
-
-          # Fall back to mutool if pdftoppm produced fewer than expected
-          if [ "${SLIDE_COUNT}" -lt "${PAGES}" ] || [ "${SLIDE_COUNT}" -eq 0 ]; then
-            echo "=== fallback: mutool for slides (1920) ==="
-            rm -f docs/slides/slide-*.png
-            mutool draw -o docs/slides/slide-%d.png -w 1920 \
-              build/SOM_PC_26_Slides.pdf
-            echo "mutool slides rc=$?"
-          fi
-          if [ "${THUMB_COUNT}" -lt "${PAGES}" ] || [ "${THUMB_COUNT}" -eq 0 ]; then
-            echo "=== fallback: mutool for thumbs (480) ==="
-            rm -f docs/slides/thumb-*.png
-            mutool draw -o docs/slides/thumb-%d.png -w 480 \
-              build/SOM_PC_26_Slides.pdf
-            echo "mutool thumbs rc=$?"
-          fi
-
-          # Zero-pad filenames so lexical order = slide order
-          cd docs/slides
-          for prefix in slide thumb; do
-            for f in ${prefix}-*.png; do
-              [ -e "$f" ] || continue
-              n=$(echo "$f" | sed -E "s/${prefix}-([0-9]+)\.png/\1/")
-              nz=$(printf '%02d' "$n")
-              [ "$f" = "${prefix}-${nz}.png" ] || mv "$f" "${prefix}-${nz}.png"
-            done
+          for i in $(seq 1 "$PAGES"); do
+            nz=$(printf '%02d' "$i")
+            render_one "$i" 1920 "docs/slides/slide-${nz}.png" \
+              || { echo "Failed to render slide $i"; exit 1; }
+            render_one "$i" 480 "docs/slides/thumb-${nz}.png" \
+              || { echo "Failed to render thumb $i"; exit 1; }
           done
 
-          SLIDE_COUNT=$(ls slide-*.png 2>/dev/null | wc -l)
-          THUMB_COUNT=$(ls thumb-*.png 2>/dev/null | wc -l)
+          rm -f docs/slides/*.tmp* 2>/dev/null || true
+          SLIDE_COUNT=$(ls docs/slides/slide-*.png 2>/dev/null | wc -l)
+          THUMB_COUNT=$(ls docs/slides/thumb-*.png 2>/dev/null | wc -l)
           echo "final: slides=${SLIDE_COUNT} thumbs=${THUMB_COUNT}"
-          du -sh .
+          du -sh docs/slides
 
-          # Fail the step only if we produced nothing usable
-          if [ "${SLIDE_COUNT}" -lt 1 ]; then
-            echo "FATAL: no slide PNGs produced"
+          if [ "${SLIDE_COUNT}" -ne "${PAGES}" ] || [ "${THUMB_COUNT}" -ne "${PAGES}" ]; then
+            echo "FATAL: expected ${PAGES} slides+thumbs, got ${SLIDE_COUNT}/${THUMB_COUNT}"
             exit 1
           fi
 
