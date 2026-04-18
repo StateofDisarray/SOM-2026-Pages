@@ -1,41 +1,50 @@
 # SOM-2026-Pages
 
 Live, web-based viewer for the SOM Informatics Precourse 2026 slide deck.
-Shows the deck as a website and highlights the slide that's currently being
-presented, driven by a committed pointer file.
+The viewer highlights the slide that's currently being presented, driven by
+a committed pointer file (`docs/current.json`).
 
-## What's in here
+## How it works
 
-- `SOM_PC_26_Slides.pptx` — source deck (do not edit directly if you can
-  help it; edit in Google Slides and re-export).
-- `build.py` — parses the pptx with `python-pptx` and emits
-  `docs/slides.json` plus per-image PNGs in `docs/media/`.
-- `docs/` — the static site deployed to GitHub Pages.
-  - `index.html` + `viewer.js` + `style.css` — the live viewer.
-  - `admin.html` — helper to generate an updated `current.json`.
-  - `slides.json` — all 75 slides as structured data (absolute positions).
-  - `current.json` — pointer to the slide that's currently being presented.
-  - `media/` — images referenced from slides.
+- **Slide rendering** — a GitHub Actions workflow
+  (`.github/workflows/render-slides.yml`) installs LibreOffice, converts
+  `SOM_PC_26_Slides.pptx` to PDF, then to high-res PNGs (1920px wide) plus
+  400px-wide thumbnails. The images are committed to `docs/slides/`.
+- **Static site** — `docs/` is served by GitHub Pages (branch mode, root
+  `/docs`). `index.html` + `viewer.js` + `style.css` render the current
+  slide as an `<img>` and poll `current.json` for live updates.
+- **Live pointer** — `docs/current.json` names the slide number currently
+  being presented. Edit + commit it to change the live slide. The viewer
+  polls every 15 seconds.
 
-## Updating the live slide
+## Setting the live slide
 
 Two ways:
 
-1. Edit `docs/current.json` directly on GitHub, bump `slide` to the current
-   number, commit. The viewer polls every ~15 seconds.
-2. Open `docs/admin.html` in the browser (works locally or on Pages), pick
-   the slide, click "Copy JSON", then "Edit on GitHub" to paste & commit.
+1. Edit `docs/current.json` on GitHub directly, bump `slide`, commit.
+2. Open `docs/admin.html` in the browser, pick the slide, click **Copy
+   JSON**, then **Edit on GitHub** to paste & commit.
 
-## Rebuilding from the pptx
+## Updating the deck
 
-```
-pip install python-pptx
-python build.py
-```
+1. Replace `SOM_PC_26_Slides.pptx`.
+2. Commit. The render workflow regenerates PNGs + `slides.json`.
+3. Pages updates automatically within a minute.
 
 ## Local preview
 
-```
+```bash
+pip install python-pptx
+python build.py          # rebuilds the titles index in docs/slides.json
 cd docs && python -m http.server 8000
 # open http://localhost:8000
 ```
+
+Slide images only exist locally after the CI workflow has run at least
+once (or if you run LibreOffice manually and drop PNGs into `docs/slides/`).
+
+## Enabling on GitHub
+
+In the repo's **Settings → Pages**, set the source to the
+`claude/powerpoint-to-website-Mub1B` branch (or `main` after merging),
+folder `/docs`.

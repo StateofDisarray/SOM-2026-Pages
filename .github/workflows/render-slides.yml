@@ -1,0 +1,99 @@
+name: Render slide images
+
+# Regenerate slide PNGs whenever the pptx (or this workflow / build script)
+# changes. Images are committed back into docs/slides so the static
+# GitHub Pages site (served from /docs) immediately picks them up.
+#
+# The commit message ends with "[skip ci]" so re-committing the images
+# doesn't re-trigger the workflow.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths:
+      - 'SOM_PC_26_Slides.pptx'
+      - 'build.py'
+      - '.github/workflows/render-slides.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install LibreOffice + poppler
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice \
+            poppler-utils \
+            fonts-liberation \
+            fonts-noto-core \
+            fonts-noto-color-emoji
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install python-pptx
+
+      - name: Rebuild slides.json (titles + count)
+        run: python build.py
+
+      - name: Convert pptx -> pdf
+        run: |
+          mkdir -p build
+          soffice --headless --norestore --nolockcheck \
+            --convert-to pdf SOM_PC_26_Slides.pptx --outdir build
+          ls -la build/
+
+      - name: Render PDF -> PNG per slide (1920x1080)
+        run: |
+          mkdir -p docs/slides
+          # pdftoppm -r 200 at 960pt width produces ~2666px — too big.
+          # Use -scale-to 1920 for a consistent 1920x1080 output.
+          pdftoppm -png -scale-to 1920 \
+            build/SOM_PC_26_Slides.pdf docs/slides/slide
+          # pdftoppm names files slide-1.png, slide-2.png … slide-75.png.
+          # Pad to slide-01.png for sane sort order.
+          cd docs/slides
+          for f in slide-*.png; do
+            n=$(echo "$f" | sed -E 's/slide-([0-9]+)\.png/\1/')
+            nz=$(printf '%02d' "$n")
+            [ "$f" = "slide-$nz.png" ] || mv "$f" "slide-$nz.png"
+          done
+          ls -la | head -10
+          echo "count: $(ls slide-*.png | wc -l)"
+
+      - name: Render thumbnails (400px wide)
+        run: |
+          pdftoppm -png -scale-to-x 400 -scale-to-y -1 \
+            build/SOM_PC_26_Slides.pdf docs/slides/thumb
+          cd docs/slides
+          for f in thumb-*.png; do
+            n=$(echo "$f" | sed -E 's/thumb-([0-9]+)\.png/\1/')
+            nz=$(printf '%02d' "$n")
+            [ "$f" = "thumb-$nz.png" ] || mv "$f" "thumb-$nz.png"
+          done
+          echo "thumbs: $(ls thumb-*.png | wc -l)"
+
+      - name: Commit rendered assets
+        run: |
+          git config user.name "som-slides-bot"
+          git config user.email "som-slides-bot@users.noreply.github.com"
+          git add docs/slides docs/slides.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Render slide images [skip ci]"
+          git push
